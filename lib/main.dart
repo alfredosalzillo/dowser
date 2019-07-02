@@ -4,17 +4,26 @@ import 'package:geolocator/geolocator.dart';
 
 void main() => runApp(MyApp());
 
+T useStream<T>(Stream<T> Function() fn, List<dynamic> store) {
+  final state = useState<T>(null);
+  useEffect(() {
+    final subscription = fn().listen((data) {
+      state.value = data;
+    });
+    return () => subscription.cancel();
+  }, store);
+  return state.value;
+}
+
+T useAsync<T>(Future<T> Function() fn, List<dynamic> store) {
+  return useStream(() => fn().asStream(), store);
+}
+
 Position usePosition(
     [LocationOptions locationOptions = const LocationOptions(
-        accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
+        accuracy: LocationAccuracy.high, distanceFilter: 0)]) {
   final geolocator = useMemo(() => Geolocator(), []);
-  final state = useState<Position>(null);
-  useEffect(() {
-    geolocator.getPositionStream(locationOptions).listen((position) {
-      state.value = position;
-    });
-  }, []);
-  return state.value;
+  return useStream(() => geolocator.getPositionStream(locationOptions), []);
 }
 
 class MyApp extends StatelessWidget {
