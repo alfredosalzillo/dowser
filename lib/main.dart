@@ -4,6 +4,19 @@ import 'package:geolocator/geolocator.dart';
 
 void main() => runApp(MyApp());
 
+Position usePosition(
+    [LocationOptions locationOptions = const LocationOptions(
+        accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
+  final geolocator = useMemo(() => Geolocator(), []);
+  final state = useState<Position>(null);
+  useEffect(() {
+    geolocator.getPositionStream(locationOptions).listen((position) {
+      state.value = position;
+    });
+  }, []);
+  return state.value;
+}
+
 class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -25,6 +38,7 @@ class MyHomePage extends HookWidget {
   @override
   Widget builder(BuildContext context) {
     final counter = useState(0);
+    final position = usePosition();
     return Scaffold(
       appBar: AppBar(
         title: Text(this.title),
@@ -33,6 +47,9 @@ class MyHomePage extends HookWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
+            Text(
+              'Current position ${position?.latitude}, ${position?.longitude}',
+            ),
             Text(
               'You have pushed the button this many times:',
             ),
@@ -51,4 +68,3 @@ class MyHomePage extends HookWidget {
     );
   }
 }
-
