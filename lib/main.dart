@@ -117,14 +117,11 @@ class HomePage extends HookWidget {
         },
         myLocationEnabled: true,
         myLocationButtonEnabled: true,
-        markers: [
-          if (markers != null)
-            ...markers.map((json) => Marker(
-                  markerId: MarkerId(json['id']),
-                  position: LatLng(
-                      double.parse(json['lat']), double.parse(json['lng'])),
-                )),
-        ].toSet(),
+        markers: markers?.map((json) => Marker(
+          markerId: MarkerId(json['id']),
+          position: LatLng(
+              double.parse(json['lat']), double.parse(json['lng'])),
+        ))?.toSet(),
       ),
     );
   }
