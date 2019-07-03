@@ -36,7 +36,7 @@ enum AsyncRequestStatus {
 class AsyncController<T> {
   final AsyncRequestStatus status;
   final T value;
-  final Error error;
+  final dynamic error;
 
   AsyncController({
     this.status = AsyncRequestStatus.none,
@@ -145,6 +145,7 @@ class HomePage extends HookWidget {
     final position = usePosition();
     final cameraController = useState<GoogleMapController>(null);
     final zoom = useState(config.defaultZoom);
+    final firstLoad = useState(true);
     prefix0.useEffect(() {
       zoom.value = config.defaultZoom;
     }, [cameraController.value]);
@@ -165,11 +166,13 @@ class HomePage extends HookWidget {
                 position.latitude,
                 position.longitude,
               ),
-            )
+            ).whenComplete(() {
+              firstLoad.value = false;
+            })
           : null;
     }, [position]);
     Widget body;
-    if (markers.status == AsyncRequestStatus.complete && markers.value != null)
+    if (markers.status == AsyncRequestStatus.complete || markers.value != null)
       body = GoogleMap(
         mapType: MapType.normal,
         initialCameraPosition: CameraPosition(target: LatLng(0, 0)),
@@ -183,15 +186,14 @@ class HomePage extends HookWidget {
         myLocationButtonEnabled: true,
         markers: markers.value?.map(_waterPointToMarker)?.toSet(),
       );
-    if (markers.status == AsyncRequestStatus.loading)
+    else if (markers.status == AsyncRequestStatus.loading)
       body = Center(
         child: new CircularProgressIndicator(),
       );
     if (markers.status == AsyncRequestStatus.error)
       _showDialog(context, markers.error);
     return Scaffold(
-      appBar: AppBar(
-      ),
+      appBar: AppBar(),
       bottomNavigationBar: BottomNavigationBar(
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(
