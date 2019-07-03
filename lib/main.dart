@@ -1,15 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dowser/data.dart';
 import 'package:flhooks/flhooks.dart';
+import 'package:flhooks/flhooks.dart' as prefix0;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 
-void main() => runApp(MyApp());
+void main() => runApp(App());
 
-T useStream<T>(Stream<T> Function() fn, List<dynamic> store) {
+T useStreamValue<T>(Stream<T> Function() fn, List<dynamic> store) {
   final state = useState<T>(null);
   useEffect(() {
     final subscription = fn().listen((data) {
@@ -20,15 +22,72 @@ T useStream<T>(Stream<T> Function() fn, List<dynamic> store) {
   return state.value;
 }
 
-T useAsync<T>(Future<T> Function() fn, List<dynamic> store) {
-  return useStream(() => fn().asStream(), store);
+T useAsyncValue<T>(Future<T> Function() fn, List<dynamic> store) {
+  return useStreamValue(() => fn().asStream(), store);
+}
+
+enum AsyncRequestStatus {
+  none,
+  loading,
+  error,
+  complete,
+}
+
+class AsyncController<T> {
+  final AsyncRequestStatus status;
+  final T value;
+  final Error error;
+
+  AsyncController({
+    this.status = AsyncRequestStatus.none,
+    this.value,
+    this.error,
+  });
+}
+
+AsyncController<T> useAsync<T>(Future<T> Function() fn, List<dynamic> store) {
+  final status = useState(AsyncRequestStatus.none);
+  final error = useState<Error>(null);
+  final value = useState<T>(null);
+  final future = useMemo(fn, store);
+  useEffect(() {
+    status.value = AsyncRequestStatus.loading;
+    if (future != null) {
+      future.catchError((e) {
+        status.value = AsyncRequestStatus.error;
+        error.value = e;
+      }).then((v) {
+        status.value = AsyncRequestStatus.complete;
+        value.value = v;
+      });
+    }
+  }, [future]);
+  return AsyncController(
+    status: status.value,
+    value: value.value,
+    error: error.value,
+  );
 }
 
 Position usePosition(
     [LocationOptions locationOptions = const LocationOptions(
-        accuracy: LocationAccuracy.high, distanceFilter: 0)]) {
+        accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
   final geolocator = useMemo(() => Geolocator(), []);
-  return useStream(() => geolocator.getPositionStream(locationOptions), []);
+  return useStreamValue(
+      () => geolocator.getPositionStream(locationOptions), []);
+}
+
+Future<List<WaterPoint>> fetchWaterPoints(LatLng latLng) async {
+  final response = await http.get(
+      'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng.longitude}&lat=${latLng.latitude}');
+  debugPrint(response.statusCode.toString());
+  final data = json.decode(response.body);
+  if (response.statusCode == 200) {
+    return (data as List)
+        .map((json) => WaterPoint.fromJson(json))
+        .toList(growable: false);
+  }
+  throw ApiError.fromJson(json.decode(response.body), response.statusCode);
 }
 
 class AppConfig extends InheritedWidget {
@@ -50,13 +109,13 @@ class AppConfig extends InheritedWidget {
   }
 }
 
-class MyApp extends StatelessWidget {
+class App extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Dowser',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
+        primaryColor: Colors.white,
       ),
       home: AppConfig(
         defaultZoom: 15.0,
@@ -65,6 +124,15 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
+Marker _waterPointToMarker(WaterPoint waterPoint) => Marker(
+      markerId: MarkerId(waterPoint.id),
+      position: LatLng(
+        waterPoint.lat,
+        waterPoint.lng,
+      ),
+      infoWindow: InfoWindow(title: waterPoint.address),
+    );
 
 class HomePage extends HookWidget {
   HomePage({this.title}) : super();
@@ -75,54 +143,97 @@ class HomePage extends HookWidget {
   Widget builder(BuildContext context) {
     final AppConfig config = AppConfig.of(context);
     final position = usePosition();
-    final _controller = useMemo(() => Completer<GoogleMapController>(), []);
-    final cameraController = useAsync(() => _controller.future, []);
+    final cameraController = useState<GoogleMapController>(null);
     final zoom = useState(config.defaultZoom);
+    prefix0.useEffect(() {
+      zoom.value = config.defaultZoom;
+    }, [cameraController.value]);
     useEffect(() {
-      if (cameraController != null && position != null) {
-        cameraController.animateCamera(CameraUpdate.newLatLngZoom(
+      if (cameraController.value != null && position != null) {
+        cameraController.value.animateCamera(CameraUpdate.newLatLngZoom(
             LatLng(
               position.latitude,
               position.longitude,
             ),
             zoom.value));
       }
-    }, [position?.longitude, position?.latitude, cameraController]);
-    final markers = useStream<List>(
-        () => position == null
-            ? Stream.empty()
-            : Geolocator()
-                .getPositionStream(
-                  LocationOptions(
-                    accuracy: LocationAccuracy.high,
-                    distanceFilter: 0,
-                  ),
-                )
-                .asyncMap((position) => http.get(
-                    'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${position.longitude}&lat=${position.latitude}'))
-                .map((response) => json.decode(response.body) as List),
-        [position?.longitude, position?.latitude]);
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(this.title),
-      ),
-      body: GoogleMap(
+    }, [position, cameraController.value]);
+    final markers = useAsync<List<WaterPoint>>(() async {
+      return position != null
+          ? fetchWaterPoints(
+              LatLng(
+                position.latitude,
+                position.longitude,
+              ),
+            )
+          : null;
+    }, [position]);
+    Widget body;
+    if (markers.status == AsyncRequestStatus.complete && markers.value != null)
+      body = GoogleMap(
         mapType: MapType.normal,
         initialCameraPosition: CameraPosition(target: LatLng(0, 0)),
         onMapCreated: (GoogleMapController controller) {
-          _controller.complete(controller);
+          cameraController.value = controller;
         },
         onCameraMove: (cameraPosition) {
           zoom.value = cameraPosition.zoom;
         },
         myLocationEnabled: true,
         myLocationButtonEnabled: true,
-        markers: markers?.map((json) => Marker(
-          markerId: MarkerId(json['id']),
-          position: LatLng(
-              double.parse(json['lat']), double.parse(json['lng'])),
-        ))?.toSet(),
+        markers: markers.value?.map(_waterPointToMarker)?.toSet(),
+      );
+    if (markers.status == AsyncRequestStatus.loading)
+      body = Center(
+        child: new CircularProgressIndicator(),
+      );
+    if (markers.status == AsyncRequestStatus.error)
+      _showDialog(context, markers.error);
+    return Scaffold(
+      appBar: AppBar(
       ),
+      bottomNavigationBar: BottomNavigationBar(
+        items: const <BottomNavigationBarItem>[
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            title: Text('Home'),
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.business),
+            title: Text('Business'),
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.school),
+            title: Text('School'),
+          ),
+        ],
+        currentIndex: 0,
+        selectedItemColor: Colors.blue[800],
+      ),
+      body: body,
+    );
+  }
+
+  void _showDialog(BuildContext context, ApiError error) {
+    // flutter defined function
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        // return object of type Dialog
+        return AlertDialog(
+          title: new Text("Error"),
+          content: new Text("An error occured: ${error.toString()}"),
+          actions: <Widget>[
+            // usually buttons at the bottom of the dialog
+            new FlatButton(
+              child: new Text("Reload"),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
     );
   }
 }
