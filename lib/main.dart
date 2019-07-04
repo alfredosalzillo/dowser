@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:dowser/data.dart';
 import 'package:flhooks/flhooks.dart';
@@ -9,6 +10,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:stream_transform/stream_transform.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(App());
 
@@ -157,7 +159,9 @@ class App extends StatelessWidget {
     final positionStreamProvider = StreamProvider.value(
       value: _getPositionStream(),
       catchError: (context, error) {
-        _showError(context, error);
+        WidgetsBinding.instance.addPostFrameCallback((duration) {
+          _showError(context, error);
+        });
       },
     );
     final waterPointsProvider = StreamProvider<WaterPoints>.value(
@@ -168,7 +172,9 @@ class App extends StatelessWidget {
           .map(_positionToLatLng)
           .asyncMap(_fetchWaterPoints),
       catchError: (context, error) {
-        _showError(context, error);
+        WidgetsBinding.instance.addPostFrameCallback((duration) {
+          _showError(context, error);
+        });
       },
     );
     return MaterialApp(
@@ -188,14 +194,26 @@ class App extends StatelessWidget {
   }
 }
 
-Marker _waterPointToMarker(WaterPoint waterPoint) => Marker(
-      markerId: MarkerId(waterPoint.id),
-      position: LatLng(
-        waterPoint.lat,
-        waterPoint.lng,
-      ),
-      infoWindow: InfoWindow(title: waterPoint.address),
-    );
+Marker _waterPointToMarker(
+  WaterPoint waterPoint, {
+  VoidCallback onTap,
+  WaterPoint selected,
+}) {
+  final isSelected = selected?.id == waterPoint?.id;
+  return Marker(
+    markerId: MarkerId(waterPoint.id),
+    position: LatLng(
+      waterPoint.lat,
+      waterPoint.lng,
+    ),
+    zIndex: isSelected ? 100 : 0,
+    icon: isSelected
+        ? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure)
+        : BitmapDescriptor.defaultMarker,
+    onTap: onTap,
+    consumeTapEvents: true,
+  );
+}
 
 class HomePage extends HookWidget {
   HomePage() : super();
@@ -205,57 +223,139 @@ class HomePage extends HookWidget {
     final config = useProvider<AppConfig>();
     final position = useProvider<Position>();
     final cameraController = useState<GoogleMapController>(null);
-    final zoom = useState(config.defaultZoom);
+    final selected = useState<WaterPoint>(null);
     useEffect(() {
-      zoom.value = config.defaultZoom;
-    }, [cameraController.value]);
-    useEffect(() {
-      if (cameraController.value != null && position != null) {
-        cameraController.value.animateCamera(CameraUpdate.newLatLngZoom(
-            LatLng(
-              position.latitude,
-              position.longitude,
-            ),
-            zoom.value));
+      if (cameraController.value != null &&
+          position != null &&
+          selected.value == null) {
+        cameraController.value.animateCamera(CameraUpdate.newLatLng(
+          LatLng(
+            position.latitude,
+            position.longitude,
+          ),
+        ));
       }
-    }, [position, cameraController.value]);
+    }, [position, cameraController.value, selected]);
     final markers = useProvider<WaterPoints>()?.list;
-    Widget body = markers != null ? GoogleMap(
-        mapType: MapType.normal,
-        initialCameraPosition: CameraPosition(target: LatLng(0, 0)),
-        onMapCreated: (GoogleMapController controller) {
-          cameraController.value = controller;
-        },
-        onCameraMove: (cameraPosition) {
-          zoom.value = cameraPosition.zoom;
-        },
-        myLocationEnabled: true,
-        myLocationButtonEnabled: true,
-        markers: markers?.map(_waterPointToMarker)?.toSet(),
-      ) : Center(
-        child: new CircularProgressIndicator(),
-      );
+    Widget body = markers != null
+        ? GoogleMap(
+            mapType: MapType.normal,
+            initialCameraPosition:
+                CameraPosition(target: LatLng(0, 0), zoom: config.defaultZoom),
+            onMapCreated: (GoogleMapController controller) {
+              cameraController.value = controller;
+            },
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
+            markers: markers
+                ?.map((waterPoint) => _waterPointToMarker(waterPoint,
+                        selected: selected.value, onTap: () {
+                      selected.value = waterPoint;
+                      cameraController.value.animateCamera(
+                          CameraUpdate.newLatLng(
+                              LatLng(waterPoint.lat, waterPoint.lng)));
+                    }))
+                ?.toSet(),
+          )
+        : Center(
+            child: new CircularProgressIndicator(),
+          );
     return Scaffold(
       appBar: AppBar(),
-      bottomNavigationBar: BottomNavigationBar(
-        items: const <BottomNavigationBarItem>[
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home),
-            title: Text('Home'),
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.business),
-            title: Text('Business'),
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.school),
-            title: Text('School'),
-          ),
-        ],
-        currentIndex: 0,
-        selectedItemColor: Colors.blue[800],
+      bottomNavigationBar: BottomNavigationSection(
+        child: selected.value != null
+            ? WaterPointPreview(
+                waterPoint: selected.value,
+              )
+            : null,
       ),
       body: body,
+    );
+  }
+}
+
+const MIN_HEIGHT = 20.0;
+const MAX_HEIGHT_RATIO = 0.3;
+
+class BottomNavigationSection extends HookWidget {
+  final Widget child;
+
+  BottomNavigationSection({
+    this.child,
+  });
+
+  @override
+  Widget builder(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          overflow: Overflow.clip,
+          alignment: Alignment.bottomCenter,
+          children: <Widget>[
+            Container(
+              height: child != null
+                  ? max(
+                      max(constraints.minHeight,
+                          min(MIN_HEIGHT, constraints.maxHeight)),
+                      constraints.maxHeight * MAX_HEIGHT_RATIO)
+                  : max(constraints.minHeight, MIN_HEIGHT),
+              decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black12,
+                        offset: Offset(0, -1),
+                        blurRadius: 8)
+                  ],
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(15.0),
+                    topRight: Radius.circular(15.0),
+                  )),
+              child: child,
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+_openMap(double latitude, double longitude) async {
+  String googleUrl = 'https://www.google.com/maps/search/?api=1&query=$latitude,$longitude';
+  if (await canLaunch(googleUrl)) {
+    await launch(googleUrl);
+  } else {
+    throw 'Could not open the map.';
+  }
+}
+
+class WaterPointPreview extends StatelessWidget {
+  final WaterPoint waterPoint;
+
+  const WaterPointPreview({Key key, @required this.waterPoint})
+      : assert(waterPoint != null),
+        super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.all(10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          ListTile(
+            title: Text(waterPoint.address),
+            subtitle: Text('address'),
+            trailing: Icon(
+              Icons.directions,
+              size: 46,
+              color: Colors.blue[800],
+            ),
+            enabled: true,
+            onLongPress: () => _openMap(waterPoint.lat, waterPoint.lng),
+          ),
+        ],
+      ),
     );
   }
 }

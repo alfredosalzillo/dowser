@@ -36,7 +36,7 @@ class WaterPoint {
   factory WaterPoint.fromJson(Map<String, dynamic> json) {
     return WaterPoint(
       id: json['id'],
-      address: json['addres'],
+      address: json['address'],
       type: json['type'],
       lat: json['lat'],
       lng: json['lng'],

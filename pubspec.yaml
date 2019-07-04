@@ -25,6 +25,7 @@ dependencies:
   http:
   stream_transform:
   provider:
+  url_launcher:
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
