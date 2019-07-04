@@ -3,11 +3,11 @@ import 'dart:convert';
 
 import 'package:dowser/data.dart';
 import 'package:flhooks/flhooks.dart';
-import 'package:flhooks/flhooks.dart' as prefix0;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
 
 void main() => runApp(App());
 
@@ -69,44 +69,71 @@ AsyncController<T> useAsync<T>(Future<T> Function() fn, List<dynamic> store) {
   );
 }
 
-Position usePosition(
-    [LocationOptions locationOptions = const LocationOptions(
-        accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
-  final geolocator = useMemo(() => Geolocator(), []);
-  return useStreamValue(
-      () => geolocator.getPositionStream(locationOptions), []);
+T useProvider<T>() {
+  return Provider.of<T>(useContext());
 }
 
-Future<List<WaterPoint>> fetchWaterPoints(LatLng latLng) async {
+Position usePosition([LocationOptions locationOptions = const LocationOptions(
+    accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
+  final geolocator = useMemo(() => Geolocator(), []);
+  return useStreamValue(
+          () => geolocator.getPositionStream(locationOptions), []);
+}
+
+class WaterPoints {
+  final List<WaterPoint> list;
+
+  WaterPoints({this.list});
+}
+
+Future<WaterPoints> _fetchWaterPoints(LatLng latLng) async {
   final response = await http.get(
-      'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng.longitude}&lat=${latLng.latitude}');
+      'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng
+          .longitude}&lat=${latLng.latitude}');
   debugPrint(response.statusCode.toString());
   final data = json.decode(response.body);
   if (response.statusCode == 200) {
-    return (data as List)
-        .map((json) => WaterPoint.fromJson(json))
-        .toList(growable: false);
+    return WaterPoints(
+        list: (data as List)
+            .map((json) => WaterPoint.fromJson(json))
+            .toList(growable: false));
   }
   throw ApiError.fromJson(json.decode(response.body), response.statusCode);
 }
 
-class AppConfig extends InheritedWidget {
+class AppConfig {
   final double defaultZoom;
 
   AppConfig({
     this.defaultZoom = 15.0,
-    key,
-    child,
-  }) : super(key: key, child: child);
+  });
+}
 
-  @override
-  bool updateShouldNotify(InheritedWidget oldWidget) {
-    return false;
-  }
+Stream<Position> _getPositionStream(BuildContext context) =>
+    Geolocator().getPositionStream(const LocationOptions(
+        accuracy: LocationAccuracy.high, distanceFilter: 10));
 
-  static AppConfig of(BuildContext context) {
-    return context.inheritFromWidgetOfExactType(AppConfig);
-  }
+void _showDialog(BuildContext context, error) {
+  // flutter defined function
+  showDialog(
+    context: context,
+    builder: (BuildContext context) {
+      // return object of type Dialog
+      return AlertDialog(
+        title: new Text("Error"),
+        content: new Text("An error occured: ${error.toString()}"),
+        actions: <Widget>[
+          // usually buttons at the bottom of the dialog
+          new FlatButton(
+            child: new Text("Retry"),
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class App extends StatelessWidget {
@@ -117,15 +144,41 @@ class App extends StatelessWidget {
       theme: ThemeData(
         primaryColor: Colors.white,
       ),
-      home: AppConfig(
-        defaultZoom: 15.0,
-        child: HomePage(title: 'Dowser'),
+      home: MultiProvider(
+        providers: [
+          Provider.value(
+            value: AppConfig(
+              defaultZoom: 15.00,
+            ),
+          ),
+          StreamProvider(
+            builder: _getPositionStream,
+          ),
+        ],
+        child: Consumer<Position>(
+          child: HomePage(),
+          builder: (context, position, child) {
+            debugPrint(position.toString());
+            return FutureProvider<WaterPoints>.value(
+              child: child,
+              value: position != null
+                  ? _fetchWaterPoints(
+                  LatLng(position.latitude, position.longitude))
+                  : Future.value(null),
+              catchError: (context, error) {
+                _showDialog(context, error);
+                return null;
+              },
+            );
+          },
+        ),
       ),
     );
   }
 }
 
-Marker _waterPointToMarker(WaterPoint waterPoint) => Marker(
+Marker _waterPointToMarker(WaterPoint waterPoint) =>
+    Marker(
       markerId: MarkerId(waterPoint.id),
       position: LatLng(
         waterPoint.lat,
@@ -135,18 +188,16 @@ Marker _waterPointToMarker(WaterPoint waterPoint) => Marker(
     );
 
 class HomePage extends HookWidget {
-  HomePage({this.title}) : super();
-
-  final String title;
+  HomePage() : super();
 
   @override
   Widget builder(BuildContext context) {
-    final AppConfig config = AppConfig.of(context);
-    final position = usePosition();
+    final config = useProvider<AppConfig>();
+    final position = useProvider<Position>();
     final cameraController = useState<GoogleMapController>(null);
     final zoom = useState(config.defaultZoom);
     final firstLoad = useState(true);
-    prefix0.useEffect(() {
+    useEffect(() {
       zoom.value = config.defaultZoom;
     }, [cameraController.value]);
     useEffect(() {
@@ -159,20 +210,9 @@ class HomePage extends HookWidget {
             zoom.value));
       }
     }, [position, cameraController.value]);
-    final markers = useAsync<List<WaterPoint>>(() async {
-      return position != null
-          ? fetchWaterPoints(
-              LatLng(
-                position.latitude,
-                position.longitude,
-              ),
-            ).whenComplete(() {
-              firstLoad.value = false;
-            })
-          : null;
-    }, [position]);
+    final markers = useProvider<WaterPoints>()?.list;
     Widget body;
-    if (markers.status == AsyncRequestStatus.complete || markers.value != null)
+    if (markers != null)
       body = GoogleMap(
         mapType: MapType.normal,
         initialCameraPosition: CameraPosition(target: LatLng(0, 0)),
@@ -184,14 +224,12 @@ class HomePage extends HookWidget {
         },
         myLocationEnabled: true,
         myLocationButtonEnabled: true,
-        markers: markers.value?.map(_waterPointToMarker)?.toSet(),
+        markers: markers?.map(_waterPointToMarker)?.toSet(),
       );
-    else if (markers.status == AsyncRequestStatus.loading)
+    else
       body = Center(
         child: new CircularProgressIndicator(),
       );
-    if (markers.status == AsyncRequestStatus.error)
-      _showDialog(context, markers.error);
     return Scaffold(
       appBar: AppBar(),
       bottomNavigationBar: BottomNavigationBar(
@@ -213,29 +251,6 @@ class HomePage extends HookWidget {
         selectedItemColor: Colors.blue[800],
       ),
       body: body,
-    );
-  }
-
-  void _showDialog(BuildContext context, ApiError error) {
-    // flutter defined function
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        // return object of type Dialog
-        return AlertDialog(
-          title: new Text("Error"),
-          content: new Text("An error occured: ${error.toString()}"),
-          actions: <Widget>[
-            // usually buttons at the bottom of the dialog
-            new FlatButton(
-              child: new Text("Reload"),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
     );
   }
 }
