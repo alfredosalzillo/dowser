@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:stream_transform/stream_transform.dart';
 
 void main() => runApp(App());
 
@@ -73,11 +74,12 @@ T useProvider<T>() {
   return Provider.of<T>(useContext());
 }
 
-Position usePosition([LocationOptions locationOptions = const LocationOptions(
-    accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
+Position usePosition(
+    [LocationOptions locationOptions = const LocationOptions(
+        accuracy: LocationAccuracy.high, distanceFilter: 10)]) {
   final geolocator = useMemo(() => Geolocator(), []);
   return useStreamValue(
-          () => geolocator.getPositionStream(locationOptions), []);
+      () => geolocator.getPositionStream(locationOptions), []);
 }
 
 class WaterPoints {
@@ -88,8 +90,7 @@ class WaterPoints {
 
 Future<WaterPoints> _fetchWaterPoints(LatLng latLng) async {
   final response = await http.get(
-      'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng
-          .longitude}&lat=${latLng.latitude}');
+      'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng.longitude}&lat=${latLng.latitude}');
   debugPrint(response.statusCode.toString());
   final data = json.decode(response.body);
   if (response.statusCode == 200) {
@@ -101,6 +102,11 @@ Future<WaterPoints> _fetchWaterPoints(LatLng latLng) async {
   throw ApiError.fromJson(json.decode(response.body), response.statusCode);
 }
 
+LatLng _positionToLatLng(Position position) => LatLng(
+      position.latitude,
+      position.longitude,
+    );
+
 class AppConfig {
   final double defaultZoom;
 
@@ -109,11 +115,15 @@ class AppConfig {
   });
 }
 
-Stream<Position> _getPositionStream(BuildContext context) =>
-    Geolocator().getPositionStream(const LocationOptions(
-        accuracy: LocationAccuracy.high, distanceFilter: 10));
+Geolocator _geolocator = Geolocator();
 
-void _showDialog(BuildContext context, error) {
+Stream<Position> _getPositionStream() =>
+    _geolocator.getPositionStream(const LocationOptions(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 10,
+    ));
+
+void _showError(BuildContext context, error) {
   // flutter defined function
   showDialog(
     context: context,
@@ -139,6 +149,28 @@ void _showDialog(BuildContext context, error) {
 class App extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
+    final appConfigProvider = Provider.value(
+      value: AppConfig(
+        defaultZoom: 15.00,
+      ),
+    );
+    final positionStreamProvider = StreamProvider.value(
+      value: _getPositionStream(),
+      catchError: (context, error) {
+        _showError(context, error);
+      },
+    );
+    final waterPointsProvider = StreamProvider<WaterPoints>.value(
+      value: _getPositionStream()
+          .transform(
+            debounce(Duration(milliseconds: 300)),
+          )
+          .map(_positionToLatLng)
+          .asyncMap(_fetchWaterPoints),
+      catchError: (context, error) {
+        _showError(context, error);
+      },
+    );
     return MaterialApp(
       title: 'Dowser',
       theme: ThemeData(
@@ -146,39 +178,17 @@ class App extends StatelessWidget {
       ),
       home: MultiProvider(
         providers: [
-          Provider.value(
-            value: AppConfig(
-              defaultZoom: 15.00,
-            ),
-          ),
-          StreamProvider(
-            builder: _getPositionStream,
-          ),
+          appConfigProvider,
+          positionStreamProvider,
+          waterPointsProvider,
         ],
-        child: Consumer<Position>(
-          child: HomePage(),
-          builder: (context, position, child) {
-            debugPrint(position.toString());
-            return FutureProvider<WaterPoints>.value(
-              child: child,
-              value: position != null
-                  ? _fetchWaterPoints(
-                  LatLng(position.latitude, position.longitude))
-                  : Future.value(null),
-              catchError: (context, error) {
-                _showDialog(context, error);
-                return null;
-              },
-            );
-          },
-        ),
+        child: HomePage(),
       ),
     );
   }
 }
 
-Marker _waterPointToMarker(WaterPoint waterPoint) =>
-    Marker(
+Marker _waterPointToMarker(WaterPoint waterPoint) => Marker(
       markerId: MarkerId(waterPoint.id),
       position: LatLng(
         waterPoint.lat,
@@ -196,7 +206,6 @@ class HomePage extends HookWidget {
     final position = useProvider<Position>();
     final cameraController = useState<GoogleMapController>(null);
     final zoom = useState(config.defaultZoom);
-    final firstLoad = useState(true);
     useEffect(() {
       zoom.value = config.defaultZoom;
     }, [cameraController.value]);
@@ -211,9 +220,7 @@ class HomePage extends HookWidget {
       }
     }, [position, cameraController.value]);
     final markers = useProvider<WaterPoints>()?.list;
-    Widget body;
-    if (markers != null)
-      body = GoogleMap(
+    Widget body = markers != null ? GoogleMap(
         mapType: MapType.normal,
         initialCameraPosition: CameraPosition(target: LatLng(0, 0)),
         onMapCreated: (GoogleMapController controller) {
@@ -225,9 +232,7 @@ class HomePage extends HookWidget {
         myLocationEnabled: true,
         myLocationButtonEnabled: true,
         markers: markers?.map(_waterPointToMarker)?.toSet(),
-      );
-    else
-      body = Center(
+      ) : Center(
         child: new CircularProgressIndicator(),
       );
     return Scaffold(
