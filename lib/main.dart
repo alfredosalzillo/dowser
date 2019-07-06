@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:dowser/data.dart';
 import 'package:flhooks/flhooks.dart';
@@ -13,6 +12,20 @@ import 'package:stream_transform/stream_transform.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(App());
+
+void useLayoutEffect(Function Function() fn, List store) {
+  useEffect(() {
+    Function() onDispose;
+    void dispose() {
+      if (onDispose != null) onDispose();
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((duration) {
+      onDispose = fn();
+    });
+    return dispose;
+  }, store);
+}
 
 T useStreamValue<T>(Stream<T> Function() fn, List<dynamic> store) {
   final state = useState<T>(null);
@@ -206,7 +219,6 @@ Marker _waterPointToMarker(
       waterPoint.lat,
       waterPoint.lng,
     ),
-    zIndex: isSelected ? 100 : 0,
     icon: isSelected
         ? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure)
         : BitmapDescriptor.defaultMarker,
@@ -248,13 +260,16 @@ class HomePage extends HookWidget {
             myLocationEnabled: true,
             myLocationButtonEnabled: true,
             markers: markers
-                ?.map((waterPoint) => _waterPointToMarker(waterPoint,
-                        selected: selected.value, onTap: () {
-                      selected.value = waterPoint;
-                      cameraController.value.animateCamera(
-                          CameraUpdate.newLatLng(
-                              LatLng(waterPoint.lat, waterPoint.lng)));
-                    }))
+                ?.map((waterPoint) => _waterPointToMarker(
+                      waterPoint,
+                      selected: selected.value,
+                      onTap: () {
+                        selected.value = waterPoint == selected.value ? null : waterPoint;
+                        cameraController.value.animateCamera(
+                            CameraUpdate.newLatLng(
+                                LatLng(waterPoint.lat, waterPoint.lng)));
+                      },
+                    ))
                 ?.toSet(),
           )
         : Center(
@@ -263,11 +278,15 @@ class HomePage extends HookWidget {
     return Scaffold(
       appBar: AppBar(),
       bottomNavigationBar: BottomNavigationSection(
-        child: selected.value != null
-            ? WaterPointPreview(
+        expanded: selected.value != null,
+        child: ListView(
+          children: <Widget>[
+            if (selected.value != null)
+              WaterPointPreview(
                 waterPoint: selected.value,
               )
-            : null,
+          ],
+        ),
       ),
       body: body,
     );
@@ -279,28 +298,33 @@ const MAX_HEIGHT_RATIO = 0.3;
 
 class BottomNavigationSection extends HookWidget {
   final Widget child;
+  final bool expanded;
 
   BottomNavigationSection({
     this.child,
+    this.expanded = false,
   });
 
-  @override
-  Widget builder(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Stack(
-          overflow: Overflow.clip,
-          alignment: Alignment.bottomCenter,
-          children: <Widget>[
-            Container(
-              height: child != null
-                  ? max(
-                      max(constraints.minHeight,
-                          min(MIN_HEIGHT, constraints.maxHeight)),
-                      constraints.maxHeight * MAX_HEIGHT_RATIO)
-                  : max(constraints.minHeight, MIN_HEIGHT),
+  get overlayPanelHeight => expanded ? 150.0 : 0.0;
+
+  get panelHeight => overlayPanelHeight;
+
+  Function() _showBottomPanel(
+    BuildContext context, {
+    Key key,
+  }) {
+    final panel = OverlayEntry(
+      builder: (context) => Positioned(
+            key: key,
+            bottom: 0,
+            left: 0,
+            child: AnimatedContainer(
+              curve: Curves.ease,
+              duration: Duration(milliseconds: 300),
+              height: overlayPanelHeight,
+              width: MediaQuery.of(context).size.width,
               decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: Colors.transparent,
                   boxShadow: [
                     BoxShadow(
                         color: Colors.black12,
@@ -311,17 +335,35 @@ class BottomNavigationSection extends HookWidget {
                     topLeft: Radius.circular(15.0),
                     topRight: Radius.circular(15.0),
                   )),
-              child: child,
+              child: Material(
+                child: this.child,
+              ),
             ),
-          ],
-        );
-      },
+          ),
+    );
+    Overlay.of(context).insert(panel);
+    return () => panel.remove();
+  }
+
+  @override
+  Widget builder(BuildContext context) {
+    final overlayKey = useMemo(() => GlobalKey(), []);
+    useLayoutEffect(() {
+      return _showBottomPanel(
+        context,
+        key: overlayKey,
+      );
+    }, [child]);
+    return Container(
+      height: 0,
+      color: Colors.transparent,
     );
   }
 }
 
 _openMap(double latitude, double longitude) async {
-  String googleUrl = 'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude';
+  String googleUrl =
+      'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude';
   if (await canLaunch(googleUrl)) {
     await launch(googleUrl);
   } else {
