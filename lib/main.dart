@@ -321,7 +321,7 @@ class BottomNavigationSection extends HookWidget {
 }
 
 _openMap(double latitude, double longitude) async {
-  String googleUrl = 'https://www.google.com/maps/search/?api=1&query=$latitude,$longitude';
+  String googleUrl = 'https://www.google.com/maps/dir/?api=1&destination=$latitude,$longitude';
   if (await canLaunch(googleUrl)) {
     await launch(googleUrl);
   } else {
@@ -352,7 +352,7 @@ class WaterPointPreview extends StatelessWidget {
               color: Colors.blue[800],
             ),
             enabled: true,
-            onLongPress: () => _openMap(waterPoint.lat, waterPoint.lng),
+            onTap: () => _openMap(waterPoint.lat, waterPoint.lng),
           ),
         ],
       ),
