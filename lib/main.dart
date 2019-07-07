@@ -98,22 +98,15 @@ Position usePosition(
       () => geolocator.getPositionStream(locationOptions), []);
 }
 
-class WaterPoints {
-  final List<WaterPoint> list;
-
-  WaterPoints({this.list});
-}
-
-Future<WaterPoints> _fetchWaterPoints(LatLng latLng) async {
+Future<List<WaterPoint>> _fetchWaterPoints(LatLng latLng) async {
   final response = await http.get(
       'https://untitled-7n0vxwvqdc4j.runkit.sh/?lng=${latLng.longitude}&lat=${latLng.latitude}');
   debugPrint(response.statusCode.toString());
   final data = json.decode(response.body);
   if (response.statusCode == 200) {
-    return WaterPoints(
-        list: (data as List)
-            .map((json) => WaterPoint.fromJson(json))
-            .toList(growable: false));
+    return (data as List)
+        .map((json) => WaterPoint.fromJson(json))
+        .toList(growable: false);
   }
   throw ApiError.fromJson(json.decode(response.body), response.statusCode);
 }
@@ -162,9 +155,21 @@ void _showError(BuildContext context, error) {
   );
 }
 
-class App extends StatelessWidget {
+class AppState extends ChangeNotifier {
+  WaterPoint _currentWaterPoint;
+
+  WaterPoint get currentWaterPoint => _currentWaterPoint;
+
+  set currentWaterPoint(WaterPoint waterPoint) {
+    _currentWaterPoint = waterPoint;
+    this.notifyListeners();
+  }
+}
+
+class App extends HookWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget builder(BuildContext context) {
+    final appStateStak = useState(List<WaterPoint>());
     final appConfigProvider = Provider.value(
       value: AppConfig(
         defaultZoom: 15.00,
@@ -178,7 +183,7 @@ class App extends StatelessWidget {
         });
       },
     );
-    final waterPointsProvider = StreamProvider<WaterPoints>.value(
+    final waterPointsProvider = StreamProvider.value(
       value: _getPositionStream()
           .transform(
             debounce(Duration(milliseconds: 300)),
@@ -191,18 +196,22 @@ class App extends StatelessWidget {
         });
       },
     );
-    return MaterialApp(
-      title: 'Dowser',
-      theme: ThemeData(
-        primaryColor: Colors.white,
-      ),
-      home: MultiProvider(
-        providers: [
-          appConfigProvider,
-          positionStreamProvider,
-          waterPointsProvider,
-        ],
-        child: HomePage(),
+    final appStateProvider = ChangeNotifierProvider.value(
+      value: AppState(),
+    );
+    return MultiProvider(
+      providers: [
+        appConfigProvider,
+        positionStreamProvider,
+        waterPointsProvider,
+        appStateProvider,
+      ],
+      child: MaterialApp(
+        title: 'Dowser',
+        theme: ThemeData(
+          primaryColor: Colors.white,
+        ),
+        home: HomePage(),
       ),
     );
   }
@@ -229,19 +238,33 @@ Marker _waterPointToMarker(
 }
 
 class HomePage extends HookWidget {
-  HomePage() : super();
+  final Key key;
+
+  HomePage({this.key}) : super(key: key);
 
   @override
   Widget builder(BuildContext context) {
-    final mapsKey = useMemo(() => GlobalKey(), []);
+    final mapsKey = useMemo(() => UniqueKey(), []);
     final config = useProvider<AppConfig>();
     final position = useProvider<Position>();
     final cameraController = useState<GoogleMapController>(null);
-    final selected = useState<WaterPoint>(null);
+    final waterPoints = useProvider<List<WaterPoint>>();
+    final selected = useProvider<AppState>().currentWaterPoint;
+    useEffect(() {
+      if (selected != null) {
+        cameraController.value.animateCamera(CameraUpdate.newLatLng(
+          LatLng(
+            selected.lat,
+            selected.lng,
+          ),
+        ));
+        return;
+      }
+    }, [selected]);
     useEffect(() {
       if (cameraController.value != null &&
           position != null &&
-          selected.value == null) {
+          selected == null) {
         cameraController.value.animateCamera(CameraUpdate.newLatLng(
           LatLng(
             position.latitude,
@@ -249,9 +272,8 @@ class HomePage extends HookWidget {
           ),
         ));
       }
-    }, [position, cameraController.value, selected]);
-    final markers = useProvider<WaterPoints>()?.list;
-    Widget body = markers != null
+    }, [position, cameraController.value]);
+    Widget body = waterPoints != null
         ? GoogleMap(
             key: mapsKey,
             mapType: MapType.normal,
@@ -262,16 +284,15 @@ class HomePage extends HookWidget {
             },
             myLocationEnabled: true,
             myLocationButtonEnabled: true,
-            markers: markers
+            markers: waterPoints
                 ?.map((waterPoint) => _waterPointToMarker(
                       waterPoint,
-                      selected: selected.value,
-                      onTap: () {
-                        selected.value =
-                            waterPoint == selected.value ? null : waterPoint;
-                        cameraController.value.animateCamera(
-                            CameraUpdate.newLatLng(
-                                LatLng(waterPoint.lat, waterPoint.lng)));
+                      selected: selected,
+                      onTap: () async {
+                        final selectedWaterPoint =
+                            waterPoint == selected ? null : waterPoint;
+                        Provider.of<AppState>(context).currentWaterPoint =
+                            selectedWaterPoint;
                       },
                     ))
                 ?.toSet(),
@@ -280,14 +301,17 @@ class HomePage extends HookWidget {
             child: new CircularProgressIndicator(),
           );
     return Scaffold(
-      appBar: AppBar(),
+      appBar: AppBar(
+        centerTitle: true,
+        title: Text("Dowser"),
+      ),
       bottomNavigationBar: BottomNavigationSection(
-        expanded: selected.value != null,
+        expanded: selected != null,
         child: ListView(
           children: <Widget>[
-            if (selected.value != null)
+            if (selected != null)
               WaterPointPreview(
-                waterPoint: selected.value,
+                waterPoint: selected,
               )
           ],
         ),
@@ -324,7 +348,7 @@ class BottomNavigationSection extends HookWidget {
             left: 0,
             child: AnimatedContainer(
               curve: Curves.ease,
-              duration: Duration(milliseconds: 300),
+              duration: Duration(milliseconds: 600),
               height: overlayPanelHeight,
               width: MediaQuery.of(context).size.width,
               decoration: BoxDecoration(
@@ -346,15 +370,18 @@ class BottomNavigationSection extends HookWidget {
                     children: <Widget>[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.filled(3, null).map((e) => Container(
-                          margin: EdgeInsets.only(top: 10.0, left: 2.0, right: 2.0),
-                          width: 10,
-                          height: 10,
-                          decoration: BoxDecoration(
-                            color: Colors.blue,
-                            shape: BoxShape.circle,
-                          ),
-                        )).toList(),
+                        children: List.filled(3, null)
+                            .map((e) => Container(
+                                  margin: EdgeInsets.only(
+                                      top: 10.0, left: 2.0, right: 2.0),
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ))
+                            .toList(),
                       ),
                       child,
                     ],
