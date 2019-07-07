@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dowser/data.dart';
 import 'package:flhooks/flhooks.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -232,6 +233,7 @@ class HomePage extends HookWidget {
 
   @override
   Widget builder(BuildContext context) {
+    final mapsKey = useMemo(() => GlobalKey(), []);
     final config = useProvider<AppConfig>();
     final position = useProvider<Position>();
     final cameraController = useState<GoogleMapController>(null);
@@ -251,6 +253,7 @@ class HomePage extends HookWidget {
     final markers = useProvider<WaterPoints>()?.list;
     Widget body = markers != null
         ? GoogleMap(
+            key: mapsKey,
             mapType: MapType.normal,
             initialCameraPosition:
                 CameraPosition(target: LatLng(0, 0), zoom: config.defaultZoom),
@@ -264,7 +267,8 @@ class HomePage extends HookWidget {
                       waterPoint,
                       selected: selected.value,
                       onTap: () {
-                        selected.value = waterPoint == selected.value ? null : waterPoint;
+                        selected.value =
+                            waterPoint == selected.value ? null : waterPoint;
                         cameraController.value.animateCamera(
                             CameraUpdate.newLatLng(
                                 LatLng(waterPoint.lat, waterPoint.lng)));
@@ -336,7 +340,26 @@ class BottomNavigationSection extends HookWidget {
                     topRight: Radius.circular(15.0),
                   )),
               child: Material(
-                child: this.child,
+                child: Container(
+                  child: Stack(
+                    overflow: Overflow.visible,
+                    children: <Widget>[
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.filled(3, null).map((e) => Container(
+                          margin: EdgeInsets.only(top: 10.0, left: 2.0, right: 2.0),
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.blue,
+                            shape: BoxShape.circle,
+                          ),
+                        )).toList(),
+                      ),
+                      child,
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -381,7 +404,14 @@ class WaterPointPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      margin: EdgeInsets.all(5),
       padding: EdgeInsets.all(10),
+      decoration: BoxDecoration(
+          borderRadius: BorderRadius.all(Radius.circular(5.0)),
+          border: Border.all(
+            color: Colors.blue,
+            width: 1.0,
+          )),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
